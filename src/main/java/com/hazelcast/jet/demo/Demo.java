@@ -6,6 +6,7 @@ import com.hazelcast.jet.Job;
 import com.hazelcast.jet.Traversers;
 import com.hazelcast.jet.aggregate.AggregateOperation1;
 import com.hazelcast.jet.core.DAG;
+import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.TimestampKind;
 import com.hazelcast.jet.core.Vertex;
 import com.hazelcast.jet.core.WindowDefinition;
@@ -15,6 +16,7 @@ import com.hazelcast.jet.datamodel.Tuple2;
 import com.hazelcast.jet.datamodel.Tuple3;
 import com.hazelcast.jet.demo.types.WakeTurbulanceCategory;
 import com.hazelcast.jet.function.DistributedToDoubleFunction;
+import com.hazelcast.jet.stream.IStreamMap;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -31,7 +33,7 @@ import static com.hazelcast.jet.aggregate.AggregateOperations.toList;
 import static com.hazelcast.jet.core.Edge.between;
 import static com.hazelcast.jet.core.Edge.from;
 import static com.hazelcast.jet.core.WatermarkEmissionPolicy.emitByFrame;
-import static com.hazelcast.jet.core.WatermarkPolicies.limitingLagAndDelay;
+import static com.hazelcast.jet.core.WatermarkPolicies.limitingTimestampAndWallClockLag;
 import static com.hazelcast.jet.core.processor.Processors.accumulateByFrameP;
 import static com.hazelcast.jet.core.processor.Processors.aggregateToSlidingWindowP;
 import static com.hazelcast.jet.core.processor.Processors.combineToSlidingWindowP;
@@ -41,7 +43,11 @@ import static com.hazelcast.jet.core.processor.Processors.insertWatermarksP;
 import static com.hazelcast.jet.core.processor.Processors.mapP;
 import static com.hazelcast.jet.core.processor.SinkProcessors.updateMapP;
 import static com.hazelcast.jet.demo.types.WakeTurbulanceCategory.HEAVY;
+import static com.hazelcast.jet.demo.util.Util.inAtlanta;
+import static com.hazelcast.jet.demo.util.Util.inFrankfurt;
+import static com.hazelcast.jet.demo.util.Util.inIstanbul;
 import static com.hazelcast.jet.demo.util.Util.inLondon;
+import static com.hazelcast.jet.demo.util.Util.inParis;
 
 public class Demo {
 
@@ -108,23 +114,67 @@ public class Demo {
     }};
 
     public static void main(String[] args) {
+
         JetInstance jet = Jet.newJetInstance();
         String url = "https://public-api.adsbexchange.com/VirtualRadar/AircraftList.json";
 
         DAG dag = new DAG();
 
-
         Vertex source = dag.newVertex("flight data source", FlightDataSource.supplier(url, 1000));
-        Vertex overLondon = dag.newVertex("planes over london", filterP((Aircraft ac) -> ac.getAlt() > 0 && inLondon(ac.getLon(), ac.getLat()) && !ac.isGnd()));
-        Vertex lessThan3000 = dag.newVertex("altitude less than 3000", filterP((Aircraft ac) -> ac.getAlt() > 0 && ac.getAlt() < 3000 && !ac.isGnd()));
 
-        WindowDefinition wDefTrend = WindowDefinition.tumblingWindowDef(30_000);
-        AggregateOperation1<Aircraft, List<Object>, List<Object>> allOf = allOf(toList(),
-                linearTrend(Aircraft::getPosTime, Aircraft::getAlt));
+        Vertex emittingHelpSignal = dag.newVertex("planes that emits help signal",
+                filterP(
+                        (Aircraft ac) -> ac.isHelp() && !ac.isGnd()
+                )
+        );
 
+        Vertex tagPlanesInInterestedCities = dag.newVertex("tag planes in interested cities",
+                mapP(
+                        (Aircraft ac) ->
+                        {
+                            // we are interested only in planes above the ground
+                            if (ac.getAlt() > 0 && !ac.isGnd()) {
+                                if (inLondon(ac.getLon(), ac.getLat())) {
+                                    ac.setCity("London");
+                                    return ac;
+                                } else if (inIstanbul(ac.getLon(), ac.getLat())) {
+                                    ac.setCity("Istanbul");
+                                    return ac;
+                                } else if (inFrankfurt(ac.getLon(), ac.getLat())) {
+                                    ac.setCity("Frankfurt");
+                                    return ac;
+                                } else if (inAtlanta(ac.getLon(), ac.getLat())) {
+                                    ac.setCity("Atlanta");
+                                    return ac;
+                                } else if (inParis(ac.getLon(), ac.getLat())) {
+                                    ac.setCity("Paris");
+                                    return ac;
+                                }
+                            }
+                            return null;
+                        }
+                )
+        );
+
+
+        Vertex altitudeLessThan3000ft = dag.newVertex("altitude less than 3000",
+                filterP(
+                        (Aircraft ac) -> ac.getAlt() > 0 && ac.getAlt() < 3000 && !ac.isGnd())
+        );
+
+        WindowDefinition wDefTrend = WindowDefinition.slidingWindowDef(60_000, 10_000);
+        AggregateOperation1<Aircraft, List<Object>, List<Object>> allOf =
+                allOf(
+                        toList(),
+                        linearTrend(Aircraft::getPosTime, Aircraft::getAlt)
+                );
 
         Vertex insertWm = dag.newVertex("insertWm",
-                insertWatermarksP(Aircraft::getPosTime, limitingLagAndDelay(60_000, 30_000), emitByFrame(wDefTrend)));
+                insertWatermarksP(
+                        Aircraft::getPosTime,
+                        limitingTimestampAndWallClockLag(60000, 60000),
+                        emitByFrame(wDefTrend))
+        ).localParallelism(1);
 
         // accumulation: calculate altitude trend
         Vertex trendStage1 = dag.newVertex("trendStage1",
@@ -132,56 +182,66 @@ public class Demo {
                         Aircraft::getId,
                         Aircraft::getPosTime, TimestampKind.EVENT,
                         wDefTrend,
-                        allOf));
+                        allOf
+                )
+        );
         Vertex trendStage2 = dag.newVertex("trendStage2", combineToSlidingWindowP(wDefTrend, allOf));
 
-        Vertex identifyPhase = dag.newVertex("identify flight phase", flatMapP((TimestampedEntry<Long, List> entry) -> {
-                    List value = entry.getValue();
-                    List<Aircraft> aircrafts = (List<Aircraft>) value.get(0);
-                    Double coefficient = (Double) value.get(1);
-                    if (coefficient == Double.NaN) {
-                        return Traversers.empty();
-                    }
-                    String phase = coefficient > 0 ? "TAKING_OFF" : "LANDING";
-                    Stream<Tuple2<Aircraft, String>> aircraftsWithPhase = aircrafts.stream().map(ac -> Tuple2.tuple2(ac, phase));
-                    return Traversers.traverseStream(aircraftsWithPhase);
-                }
-        ));
-
-
-        Vertex enrichWithNoiseInfo = dag.newVertex("enrich with noise info", mapP((Tuple2<Aircraft, String> tuple2) -> {
-            Aircraft aircraft = tuple2.f0();
-            String phase = tuple2.f1();
-            Long altitude = aircraft.getAlt();
-            Integer currentDb = getPhaseNoiseLookupTable(phase, aircraft.getWtc()).tailMap(altitude.intValue()).values().iterator().next();
-            return Tuple3.tuple3(aircraft, phase, currentDb);
-
-        }));
-
-
-        Vertex averageNoise = dag.newVertex("average noise", aggregateToSlidingWindowP(
-                t -> "AVG_NOISE_DB",
-                (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f0().getPosTime(),
-                TimestampKind.EVENT,
-                wDefTrend,
-                averagingLong(
-                        (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f2()
-                )
+        Vertex identifyPhase = dag.newVertex("identify flight phase",
+                flatMapP(
+                        (TimestampedEntry<Long, List> entry) -> {
+                            List value = entry.getValue();
+                            List<Aircraft> aircrafts = (List<Aircraft>) value.get(0);
+                            Double coefficient = (Double) value.get(1);
+                            if (coefficient == Double.NaN) {
+                                return Traversers.empty();
+                            }
+                            String phase = coefficient > 0 ? "TAKING_OFF" : "LANDING";
+                            Stream<Tuple2<Aircraft, String>> aircraftsWithPhase = aircrafts.stream().map(ac -> Tuple2.tuple2(ac, phase));
+                            return Traversers.traverseStream(aircraftsWithPhase);
+                        }
                 )
         );
 
 
-        Vertex enrichWithC02Emission = dag.newVertex("enrich with C02 emission info", mapP((Tuple2<Aircraft, String> tuple2) -> {
-            Aircraft aircraft = tuple2.f0();
-            String phase = tuple2.f1();
-            Double ltoC02EmissionInKg = typeToLTOCycyleC02Emission.getOrDefault(aircraft.getType(), 0d);
-            return Tuple3.tuple3(aircraft, phase, ltoC02EmissionInKg);
+        Vertex enrichWithNoiseInfo = dag.newVertex("enrich with noise info",
+                mapP(
+                        (Tuple2<Aircraft, String> tuple2) -> {
+                            Aircraft aircraft = tuple2.f0();
+                            String phase = tuple2.f1();
+                            Long altitude = aircraft.getAlt();
+                            Integer currentDb = getPhaseNoiseLookupTable(phase, aircraft.getWtc()).tailMap(altitude.intValue()).values().iterator().next();
+                            return Tuple3.tuple3(aircraft, phase, currentDb);
 
-        }));
+                        }
+                )
+        );
 
+        Vertex averageNoise = dag.newVertex("average noise",
+                aggregateToSlidingWindowP(
+                        (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f0().getCity() + "_AVG_NOISE",
+                        (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f0().getPosTime(),
+                        TimestampKind.EVENT,
+                        wDefTrend,
+                        averagingLong(
+                                (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f2()
+                        )
+                )
+        );
+
+        Vertex enrichWithC02Emission = dag.newVertex("enrich with C02 emission info",
+                mapP(
+                        (Tuple2<Aircraft, String> tuple2) -> {
+                            Aircraft aircraft = tuple2.f0();
+                            String phase = tuple2.f1();
+                            Double ltoC02EmissionInKg = typeToLTOCycyleC02Emission.getOrDefault(aircraft.getType(), 0d);
+                            return Tuple3.tuple3(aircraft, phase, ltoC02EmissionInKg);
+                        }
+                )
+        );
 
         Vertex averagePollution = dag.newVertex("pollution", aggregateToSlidingWindowP(
-                t -> "C02_EMISSION",
+                (Tuple3<Aircraft, String, Double> tuple3) -> tuple3.f0().getCity() + "_C02_EMISSION",
                 (Tuple3<Aircraft, String, Double> tuple3) -> tuple3.f0().getPosTime(),
                 TimestampKind.EVENT,
                 wDefTrend,
@@ -190,51 +250,106 @@ public class Demo {
                 )
         ));
 
-        Vertex takingOffMapSink = dag.newVertex("taking off aircrafts to map", updateMapP("takeOffMap",
-                (Tuple2<Aircraft, String> tuple2) -> tuple2.f0().getId(),
-                (Aircraft aircraft, Tuple2<Aircraft, String> tuple2) -> {
-                    if ("TAKING_OFF".equals(tuple2.f1())) {
-                        return tuple2.f0();
-                    }
-                    return null;
-                }));
+        Vertex emergencyMapSink = dag.newVertex("aircrafts in emergency to map",
+                updateMapP("emergencyMap",
+                        Aircraft::getId,
+                        (Aircraft oldValue, Aircraft newValue) -> newValue)
+        );
 
-        Vertex landingMapSink = dag.newVertex("landing aircrafts to map", updateMapP("landingMap",
-                (Tuple2<Aircraft, String> tuple2) -> tuple2.f0().getId(),
-                (Aircraft aircraft, Tuple2<Aircraft, String> tuple2) -> {
-                    if ("LANDING".equals(tuple2.f1())) {
-                        return tuple2.f0();
-                    }
-                    return null;
-                }));
+        Vertex takingOffMapSink = dag.newVertex("taking off aircrafts to map",
+                updateMapP("takeOffMap",
+                        (Tuple2<Aircraft, String> tuple2) -> tuple2.f0().getId(),
+                        (Aircraft aircraft, Tuple2<Aircraft, String> tuple2) -> {
+                            if ("TAKING_OFF".equals(tuple2.f1())) {
+                                return tuple2.f0();
+                            }
+                            return null;
+                        }
+                )
+        );
 
+        Vertex landingMapSink = dag.newVertex("landing aircrafts to map",
+                updateMapP("landingMap",
+                        (Tuple2<Aircraft, String> tuple2) -> tuple2.f0().getId(),
+                        (Aircraft aircraft, Tuple2<Aircraft, String> tuple2) -> {
+                            if ("LANDING".equals(tuple2.f1())) {
+                                return tuple2.f0();
+                            }
+                            return null;
+                        }
+                )
+        );
+
+        Vertex graphiteSink = dag.newVertex("graphite sink",
+                ProcessorSupplier.of(
+                        () -> new GraphiteSink("127.0.0.1", 2004)
+                )
+        );
 
         Vertex loggerSink = dag.newVertex("logger", DiagnosticProcessors.writeLoggerP());
-        dag.edge(from(source, 0).to(overLondon, 0));
-        dag.edge(from(overLondon, 0).to(lessThan3000, 0));
 
+        // planes emitting help/emergency signal
+        dag.edge(from(source, 0).to(emittingHelpSignal));
+        dag.edge(from(emittingHelpSignal).to(emergencyMapSink));
+
+        // flights over interested cities
+        dag.edge(from(source, 1).to(tagPlanesInInterestedCities));
+
+        // flights less then altitude 3000 ft.
+        dag.edge(from(tagPlanesInInterestedCities).to(altitudeLessThan3000ft));
+
+        // identify flight phase (LANDING/TAKE-OFF)
         dag
-                .edge(from(lessThan3000, 0).to(insertWm, 0))
+                .edge(from(altitudeLessThan3000ft).to(insertWm))
                 .edge(between(insertWm, trendStage1)
                         .partitioned(Aircraft::getId))
                 .edge(between(trendStage1, trendStage2)
-                        .partitioned((TimestampedEntry e) -> e.getKey()).distributed())
-                .edge(from(trendStage2).to(identifyPhase))
+                        .partitioned((TimestampedEntry e) -> e.getKey()))
+                .edge(from(trendStage2).to(identifyPhase).distributed());
+
+
+        // average noise path
+        dag
                 .edge(from(identifyPhase, 0).to(enrichWithNoiseInfo))
                 .edge(from(enrichWithNoiseInfo).to(averageNoise)
                                                .allToOne())
-                .edge(from(averageNoise).to(loggerSink))
+                .edge(from(averageNoise).to(graphiteSink));
 
+
+        // C02 emission calculation path
+        dag
                 .edge(from(identifyPhase, 1).to(enrichWithC02Emission))
                 .edge(from(enrichWithC02Emission).to(averagePollution)
                                                  .allToOne())
-                .edge(from(averagePollution).to(loggerSink, 1))
+                .edge(from(averagePollution).to(graphiteSink, 1));
 
-                .edge(from(identifyPhase, 2).to(takingOffMapSink))
-                .edge(from(identifyPhase, 3).to(landingMapSink));
+        // taking off planes to IMap
+        dag.edge(from(identifyPhase, 2).to(takingOffMapSink));
+
+        // landing planes to IMap
+        dag.edge(from(identifyPhase, 3).to(landingMapSink));
 
 
         Job job = jet.newJob(dag);
+        new Thread(() -> {
+            while (true) {
+                IStreamMap<Object, Object> takingOff = jet.getMap("takeOffMap");
+                IStreamMap<Object, Object> landingMap = jet.getMap("landingMap");
+                IStreamMap<Object, Object> emergencyMap = jet.getMap("emergencyMap");
+                System.out.println("TAKING OFF");
+                takingOff.entrySet().forEach(System.out::println);
+                System.out.println("LANDING");
+                landingMap.entrySet().forEach(System.out::println);
+                System.out.println("EMERGENCY");
+                emergencyMap.entrySet().forEach(System.out::println);
+                try {
+                    Thread.sleep(10000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+
+        }).start();
         job.join();
 
     }
@@ -255,40 +370,5 @@ public class Demo {
         }
         return Collections.emptySortedMap();
     }
-
-
-    //IMAGE ENRICHMENT
-    //        ComputeStage<Tuple2<String, ?>> images = overIstanbul.map(ac -> {
-//            HttpURLConnection con = null;
-//            try {
-//                con = (HttpURLConnection) new URL("http://www.airport-data.com/api/ac_thumb.json?m=" + ac.getIcao() + "&n=1").openConnection();
-//                con.setRequestMethod("GET");
-//                con.addRequestProperty("User-Agent", "Mozilla / 5.0 (Windows NT 6.1; WOW64) AppleWebKit / 537.36 (KHTML, like Gecko) Chrome / 40.0.2214.91 Safari / 537.36");
-//                con.getResponseCode();
-//
-//                BufferedReader in = new BufferedReader(new InputStreamReader(con.getInputStream()));
-//                String inputLine;
-//                StringBuilder response = new StringBuilder();
-//                while ((inputLine = in.readLine()) != null) {
-//                    response.append(inputLine);
-//                }
-//                in.close();
-//                con.disconnect();
-//
-//                JsonValue value = Json.parse(response.toString());
-//                JsonObject object = value.asObject();
-//                if (object.get("status").asInt() == 404) {
-//                    return Tuple2.tuple2(ac.getReg(), null);
-//                }
-//                String imageLink = object.get("data").asArray().get(0).asObject().get("image").asString();
-//                return Tuple2.tuple2(ac.getReg(), imageLink);
-//            } catch (Exception e) {
-//                e.printStackTrace();
-//            }
-//            return Tuple2.tuple2(ac.getReg(), null);
-//
-//        });
-//        images.drainTo(Sinks.logger());
-
 
 }

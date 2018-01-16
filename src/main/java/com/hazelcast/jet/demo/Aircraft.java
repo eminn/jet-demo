@@ -10,6 +10,7 @@ import com.hazelcast.jet.demo.types.SpeedType;
 import com.hazelcast.jet.demo.types.TransponderType;
 import com.hazelcast.jet.demo.types.VerticalSpeedType;
 import com.hazelcast.jet.demo.types.WakeTurbulanceCategory;
+import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
 
@@ -26,7 +27,7 @@ import static com.hazelcast.jet.demo.util.Util.asStringArray;
  * date: 1/8/18
  * author: emindemirci
  */
-public class Aircraft implements JsonSerializable {
+public class Aircraft implements JsonSerializable, Serializable {
 
     /**
      * The unique identifier of the aircraft.
@@ -93,6 +94,7 @@ public class Aircraft implements JsonSerializable {
     boolean resetTrail;
     boolean hasSig;
     long sig;
+    String city;
 
 
     public long getId() {
@@ -331,6 +333,14 @@ public class Aircraft implements JsonSerializable {
         return sig;
     }
 
+    public String getCity() {
+        return city;
+    }
+
+    public void setCity(String city) {
+        this.city = city;
+    }
+
     @Override public JsonObject toJson() {
         return null;
     }
@@ -414,6 +424,7 @@ public class Aircraft implements JsonSerializable {
                 ", callSus=" + callSus +
                 ", lat=" + lat +
                 ", lon=" + lon +
+                ", city=" + city +
                 ", posTime=" + posTime +
                 ", mLat=" + mLat +
                 ", posStale=" + posStale +

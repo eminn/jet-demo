@@ -12,27 +12,56 @@ import static java.util.Collections.EMPTY_LIST;
  */
 public class Util {
 
-    public static double IST_LON_EAST = 29.5;
-    public static double IST_LON_WEST = 28.2;
-    public static double IST_LAT_NORTH = 41.2;
-    public static double IST_LAT_SOUTH = 40.8;
+    public static float IST_LAT = 40.982555f;
+    public static float IST_LON = 28.820829f;
+
+    public static float LHR_LAT = 51.470020f;
+    public static float LHR_LON = -0.454295f;
+
+    public static float FRA_LAT = 50.110924f;
+    public static float FRA_LON = 8.682127f;
+
+    public static float ATL_LAT = 33.640411f;
+    public static float ATL_LON = -84.419853f;
 
 
-    public static double LON_LON_EAST = 0.2927;
-    public static double LON_LON_WEST = -0.5372;
-    public static double LON_LAT_NORTH = 51.7283;
-    public static double LON_LAT_SOUTH = 51.3305;
-
+    public static float PAR_LAT = 49.0096906f;
+    public static float PAR_LON = 2.54792450f;
 
 
     public static boolean inIstanbul(float lon, float lat) {
-        return !(lon > IST_LON_EAST || lon < IST_LON_WEST) &&
-                !(lat > IST_LAT_NORTH || lat < IST_LAT_SOUTH);
+        return inBoundariesOf(lon, lat, boundingBox(IST_LON, IST_LAT, 80f));
     }
+
     public static boolean inLondon(float lon, float lat) {
-        return !(lon > LON_LON_EAST || lon < LON_LON_WEST) &&
-                !(lat > LON_LAT_NORTH || lat < LON_LAT_SOUTH);
+        return inBoundariesOf(lon, lat, boundingBox(LHR_LON, LHR_LAT, 80f));
     }
+
+    public static boolean inFrankfurt(float lon, float lat) {
+        return inBoundariesOf(lon, lat, boundingBox(FRA_LON, FRA_LAT, 80f));
+    }
+
+    public static boolean inAtlanta(float lon, float lat) {
+        return inBoundariesOf(lon, lat, boundingBox(ATL_LON, ATL_LAT, 80f));
+    }
+
+    public static boolean inParis(float lon, float lat) {
+        return inBoundariesOf(lon, lat, boundingBox(PAR_LON, PAR_LAT, 80f));
+    }
+
+    public static double[] boundingBox(float lon, float lat, float radius) {
+        double boundingLon1 = lon + radius / Math.abs(Math.cos(Math.toRadians(lat)) * 69);
+        double boundingLon2 = lon - radius / Math.abs(Math.cos(Math.toRadians(lat)) * 69);
+        double boundingLat1 = lat + (radius / 69);
+        double boundingLat2 = lat - (radius / 69);
+        return new double[]{boundingLon1, boundingLat1, boundingLon2, boundingLat2};
+    }
+
+    public static boolean inBoundariesOf(float lon, float lat, double[] boundaries) {
+        return !(lon > boundaries[0] || lon < boundaries[2]) &&
+                !(lat > boundaries[1] || lat < boundaries[3]);
+    }
+
 
     public static double asDouble(JsonValue value) {
         return value == null ? -1.0 : value.asDouble();
