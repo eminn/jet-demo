@@ -6,102 +6,107 @@ import com.hazelcast.com.eclipsesource.json.JsonArray;
 import com.hazelcast.com.eclipsesource.json.JsonObject;
 import com.hazelcast.com.eclipsesource.json.JsonValue;
 import com.hazelcast.jet.Traverser;
-import com.hazelcast.jet.Traversers;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.util.ExceptionUtil;
+import com.hazelcast.util.StringUtil;
+
+import javax.net.ssl.HttpsURLConnection;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.stream.Collectors;
-import javax.net.ssl.HttpsURLConnection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
+import static com.hazelcast.jet.Traversers.traverseIterable;
 import static com.hazelcast.jet.core.ProcessorMetaSupplier.dontParallelize;
-import static java.net.URLEncoder.encode;
+import static com.hazelcast.jet.impl.util.Util.uncheckCall;
+import static com.hazelcast.util.StringUtil.isNullOrEmpty;
 
-/**
- * date: 1/8/18
- * author: emindemirci
- */
 public class FlightDataSource extends AbstractProcessor {
 
     private final URL url;
     private final long intervalMillis;
-    private Traverser<Aircraft> aircraftTraverser;
-    private boolean lastTraverserExhausted = true;
-    private List<String> knownIds = new ArrayList<>(10000);
-    private int[] count;
+    private final Map<Long, Long> idToTimestamp = new HashMap<>();
 
-    public FlightDataSource(String url, long intervalMillis) {
+    private Traverser<Aircraft> traverser;
+    private long lastPoll;
+
+    public FlightDataSource(String url, long pollIntervalMillis) {
         try {
             this.url = new URL(url);
         } catch (MalformedURLException e) {
             throw ExceptionUtil.rethrow(e);
         }
-        this.intervalMillis = intervalMillis;
+        this.intervalMillis = pollIntervalMillis;
     }
 
-    @Override protected void init(Context context) throws Exception {
-        super.init(context);
-    }
-
-
-    @Override public boolean complete() {
-        if (lastTraverserExhausted) {
-            poll();
+    @Override
+    public boolean complete() {
+        if (traverser == null) {
+            long now = System.currentTimeMillis();
+            if (now > lastPoll + intervalMillis) {
+                lastPoll = now;
+                traverser = uncheckCall(this::poll);
+            } else {
+                return false;
+            }
         }
-        lastTraverserExhausted = emitFromTraverser(aircraftTraverser);
+        if (emitFromTraverser(traverser)) {
+            traverser = null;
+        }
         return false;
     }
 
-    private void poll() {
-        try {
-            String ids = knownIds.stream().collect(Collectors.joining("-"));
-            byte[] out = (encode("ICAOS", "UTF-8") + "=" + encode(ids, "UTF-8")).getBytes(StandardCharsets.UTF_8);
-            int length = out.length;
+    @Override
+    public boolean isCooperative() {
+        return false;
+    }
 
-            HttpsURLConnection con = (HttpsURLConnection) url.openConnection();
+    private Traverser<Aircraft> poll() throws Exception {
+        HttpsURLConnection con = (HttpsURLConnection) url.openConnection();
+        con.setRequestMethod("GET");
+        con.addRequestProperty("User-Agent", "Mozilla / 5.0 (Windows NT 6.1; WOW64) AppleWebKit / 537.36 (KHTML, like Gecko) Chrome / 40.0.2214.91 Safari / 537.36");
+        con.getResponseCode();
 
-            con.setRequestMethod("POST");
-            con.setDoOutput(true);
-            con.addRequestProperty("User-Agent", "Mozilla / 5.0 (Windows NT 6.1; WOW64) AppleWebKit / 537.36 (KHTML, like Gecko) Chrome / 40.0.2214.91 Safari / 537.36");
-            con.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-            con.setRequestProperty("Content-Length", String.valueOf(length));
-
-            try (OutputStream os = con.getOutputStream()) {
-                os.write(out);
-            }
-
-            con.getResponseCode();
-
-            BufferedReader in = new BufferedReader(new InputStreamReader(con.getInputStream()));
-            String inputLine;
-            StringBuilder response = new StringBuilder();
-            while ((inputLine = in.readLine()) != null) {
-                response.append(inputLine);
-            }
-            in.close();
-            con.disconnect();
-
-            JsonValue value = Json.parse(response.toString());
-            JsonObject object = value.asObject();
-            JsonArray acList = object.get("acList").asArray();
-            aircraftTraverser = Traversers.traverseStream(acList.values().stream().map(ac -> {
-                        Aircraft aircraft = new Aircraft();
-                        aircraft.fromJson(ac.asObject());
-                        knownIds.add(aircraft.getIcao());
-                        return aircraft;
-                    })
-            );
-        } catch (Exception e) {
-            throw ExceptionUtil.rethrow(e);
+        BufferedReader in = new BufferedReader(new InputStreamReader(con.getInputStream()));
+        String inputLine;
+        StringBuilder response = new StringBuilder();
+        while ((inputLine = in.readLine()) != null) {
+            response.append(inputLine);
         }
+        in.close();
+        con.disconnect();
+
+        JsonValue value = Json.parse(response.toString());
+        JsonObject object = value.asObject();
+        JsonArray acList = object.get("acList").asArray();
+        getLogger().info("Polled " + acList.size() + " aircraft.");
+        return traverseIterable(acList.values())
+                .map(this::parseAc)
+                .filter(a -> !isNullOrEmpty(a.reg)) // there should be a reg number
+                .filter(a -> a.posTime > 0) // there should be a timestamp
+                .filter(a -> {
+                    // only emit updated aircraft
+                    Long newTs = a.posTime;
+                    if (newTs <= 0) {
+                        return false;
+                    }
+                    Long oldTs = idToTimestamp.get(a.id);
+                    if (oldTs != null && newTs <= oldTs) {
+                        return false;
+                    }
+                    idToTimestamp.put(a.id, newTs);
+                    return true;
+                });
+    }
+
+    private Aircraft parseAc(JsonValue ac) {
+        Aircraft aircraft = new Aircraft();
+        aircraft.fromJson(ac.asObject());
+        return aircraft;
     }
 
     public static ProcessorMetaSupplier supplier(String url, long intevalMillis) {

@@ -10,6 +10,8 @@ import com.hazelcast.jet.demo.types.SpeedType;
 import com.hazelcast.jet.demo.types.TransponderType;
 import com.hazelcast.jet.demo.types.VerticalSpeedType;
 import com.hazelcast.jet.demo.types.WakeTurbulanceCategory;
+import com.hazelcast.jet.impl.util.Util;
+
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.List;
@@ -23,10 +25,6 @@ import static com.hazelcast.jet.demo.util.Util.asLong;
 import static com.hazelcast.jet.demo.util.Util.asString;
 import static com.hazelcast.jet.demo.util.Util.asStringArray;
 
-/**
- * date: 1/8/18
- * author: emindemirci
- */
 public class Aircraft implements JsonSerializable, Serializable {
 
     /**
@@ -341,11 +339,13 @@ public class Aircraft implements JsonSerializable, Serializable {
         this.city = city;
     }
 
-    @Override public JsonObject toJson() {
-        return null;
+    @Override
+    public JsonObject toJson() {
+        throw new UnsupportedOperationException();
     }
 
-    @Override public void fromJson(JsonObject json) {
+    @Override
+    public void fromJson(JsonObject json) {
         id = asLong(json.get("Id"));
         tsecs = asLong(json.get("TSecs"));
         rcvr = asLong(json.get("Rcvr"));
@@ -407,7 +407,18 @@ public class Aircraft implements JsonSerializable, Serializable {
         sig = asLong(json.get("Sig"));
     }
 
-    @Override public String toString() {
+    @Override
+    public String toString() {
+        return "Aircraft{" +
+                "reg='" + reg + '\'' +
+                ", alt=" + alt +
+                ", coord=" + String.format("%.2f,%.2f", lat, lon) +
+                ", mdl='" + mdl + '\'' +
+                ", posTime=" + Util.toLocalDateTime(posTime).toLocalTime() +
+                '}';
+    }
+
+    public String fullString() {
         return "Aircraft{" +
                 "id=" + id +
                 ", tsecs=" + tsecs +
@@ -425,7 +436,8 @@ public class Aircraft implements JsonSerializable, Serializable {
                 ", lat=" + lat +
                 ", lon=" + lon +
                 ", city=" + city +
-                ", posTime=" + posTime +
+                ", posTime=" + Util.toLocalDateTime(posTime) +
+                ", posTimeTs=" + posTime +
                 ", mLat=" + mLat +
                 ", posStale=" + posStale +
                 ", isTisb=" + isTisb +
