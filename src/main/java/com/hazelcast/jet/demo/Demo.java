@@ -33,7 +33,7 @@ import static com.hazelcast.jet.aggregate.AggregateOperations.toList;
 import static com.hazelcast.jet.core.Edge.between;
 import static com.hazelcast.jet.core.Edge.from;
 import static com.hazelcast.jet.core.WatermarkEmissionPolicy.emitByFrame;
-import static com.hazelcast.jet.core.WatermarkPolicies.limitingTimestampAndWallClockLag;
+import static com.hazelcast.jet.core.WatermarkPolicies.withFixedLag;
 import static com.hazelcast.jet.core.processor.Processors.accumulateByFrameP;
 import static com.hazelcast.jet.core.processor.Processors.aggregateToSlidingWindowP;
 import static com.hazelcast.jet.core.processor.Processors.combineToSlidingWindowP;
@@ -154,15 +154,15 @@ public class Demo {
                             return null;
                         }
                 )
-        );
+        ).localParallelism(1);
 
 
         Vertex altitudeLessThan3000ft = dag.newVertex("altitude less than 3000",
                 filterP(
                         (Aircraft ac) -> ac.getAlt() > 0 && ac.getAlt() < 3000 && !ac.isGnd())
-        );
+        ).localParallelism(1);
 
-        WindowDefinition wDefTrend = WindowDefinition.slidingWindowDef(60_000, 10_000);
+        WindowDefinition wDefTrend = WindowDefinition.slidingWindowDef(60_000, 30_000);
         AggregateOperation1<Aircraft, List<Object>, List<Object>> allOf =
                 allOf(
                         toList(),
@@ -172,7 +172,7 @@ public class Demo {
         Vertex insertWm = dag.newVertex("insertWm",
                 insertWatermarksP(
                         Aircraft::getPosTime,
-                        limitingTimestampAndWallClockLag(60000, 60000),
+                        withFixedLag(60000),
                         emitByFrame(wDefTrend))
         ).localParallelism(1);
 
@@ -289,11 +289,11 @@ public class Demo {
         Vertex loggerSink = dag.newVertex("logger", DiagnosticProcessors.writeLoggerP());
 
         // planes emitting help/emergency signal
-        dag.edge(from(source, 0).to(emittingHelpSignal));
+        dag.edge(from(source, 0).to(emittingHelpSignal).distributed().broadcast());
         dag.edge(from(emittingHelpSignal).to(emergencyMapSink));
 
         // flights over interested cities
-        dag.edge(from(source, 1).to(tagPlanesInInterestedCities));
+        dag.edge(from(source, 1).to(tagPlanesInInterestedCities).distributed().broadcast());
 
         // flights less then altitude 3000 ft.
         dag.edge(from(tagPlanesInInterestedCities).to(altitudeLessThan3000ft));
@@ -302,15 +302,17 @@ public class Demo {
         dag
                 .edge(from(altitudeLessThan3000ft).to(insertWm))
                 .edge(between(insertWm, trendStage1)
-                        .partitioned(Aircraft::getId))
+                        .partitioned(Aircraft::getId)
+                )
                 .edge(between(trendStage1, trendStage2)
-                        .partitioned((TimestampedEntry e) -> e.getKey()))
-                .edge(from(trendStage2).to(identifyPhase).distributed());
+                        .partitioned((TimestampedEntry e) -> e.getKey())
+                )
+                .edge(from(trendStage2).to(identifyPhase));
 
 
         // average noise path
         dag
-                .edge(from(identifyPhase, 0).to(enrichWithNoiseInfo))
+                .edge(from(identifyPhase, 0).to(enrichWithNoiseInfo).distributed().broadcast())
                 .edge(from(enrichWithNoiseInfo).to(averageNoise)
                                                .allToOne())
                 .edge(from(averageNoise).to(graphiteSink));
@@ -318,16 +320,16 @@ public class Demo {
 
         // C02 emission calculation path
         dag
-                .edge(from(identifyPhase, 1).to(enrichWithC02Emission))
+                .edge(from(identifyPhase, 1).to(enrichWithC02Emission).distributed().broadcast())
                 .edge(from(enrichWithC02Emission).to(averagePollution)
                                                  .allToOne())
                 .edge(from(averagePollution).to(graphiteSink, 1));
 
         // taking off planes to IMap
-        dag.edge(from(identifyPhase, 2).to(takingOffMapSink));
+        dag.edge(from(identifyPhase, 2).to(takingOffMapSink).distributed().broadcast());
 
         // landing planes to IMap
-        dag.edge(from(identifyPhase, 3).to(landingMapSink));
+        dag.edge(from(identifyPhase, 3).to(landingMapSink).distributed().broadcast());
 
 
         Job job = jet.newJob(dag);
