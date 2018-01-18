@@ -3,8 +3,10 @@ package com.hazelcast.jet.demo;
 import com.hazelcast.jet.Jet;
 import com.hazelcast.jet.JetInstance;
 import com.hazelcast.jet.Job;
+import com.hazelcast.jet.aggregate.AggregateOperations;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.Processor;
+import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.TimestampKind;
 import com.hazelcast.jet.core.Vertex;
 import com.hazelcast.jet.core.Watermark;
@@ -12,12 +14,13 @@ import com.hazelcast.jet.core.WindowDefinition;
 import com.hazelcast.jet.core.processor.DiagnosticProcessors;
 import com.hazelcast.jet.datamodel.TimestampedEntry;
 import com.hazelcast.jet.datamodel.Tuple2;
+import com.hazelcast.jet.datamodel.Tuple3;
 import com.hazelcast.jet.demo.types.WakeTurbulanceCategory;
 import com.hazelcast.jet.function.DistributedFunction;
 import com.hazelcast.jet.function.DistributedSupplier;
+import com.hazelcast.jet.function.DistributedToDoubleFunction;
 import com.hazelcast.jet.stream.IStreamMap;
 import com.hazelcast.map.listener.EntryAddedListener;
-
 import java.util.Collections;
 import java.util.List;
 import java.util.SortedMap;
@@ -26,12 +29,14 @@ import java.util.function.Consumer;
 
 import static com.hazelcast.jet.aggregate.AggregateOperations.allOf;
 import static com.hazelcast.jet.aggregate.AggregateOperations.linearTrend;
+import static com.hazelcast.jet.aggregate.AggregateOperations.summingDouble;
 import static com.hazelcast.jet.aggregate.AggregateOperations.toList;
 import static com.hazelcast.jet.core.Edge.between;
 import static com.hazelcast.jet.core.Edge.from;
 import static com.hazelcast.jet.core.WatermarkEmissionPolicy.emitByFrame;
 import static com.hazelcast.jet.core.WatermarkGenerationParams.wmGenParams;
-import static com.hazelcast.jet.core.WatermarkPolicies.withFixedLag;
+import static com.hazelcast.jet.core.WatermarkPolicies.limitingLagAndDelay;
+import static com.hazelcast.jet.core.processor.DiagnosticProcessors.peekInputP;
 import static com.hazelcast.jet.core.processor.DiagnosticProcessors.peekOutputP;
 import static com.hazelcast.jet.core.processor.Processors.aggregateToSlidingWindowP;
 import static com.hazelcast.jet.core.processor.Processors.filterP;
@@ -73,13 +78,6 @@ public class Demo {
         }
     }
 
-    private static void print(IStreamMap<Long, Aircraft> map) {
-        String aircraft = map.values().stream()
-                             .filter(e -> e.reg != null)
-                             .map(e -> e.reg)
-                             .collect(joining(", "));
-        System.out.println(map.getName() + ": " + aircraft);
-    }
 
     private static DAG buildDAG() {
         DAG dag = new DAG();
@@ -98,7 +96,7 @@ public class Demo {
         WindowDefinition wDefTrend = WindowDefinition.slidingWindowDef(60_000, 30_000);
         DistributedSupplier<Processor> insertWMP = insertWatermarksP(wmGenParams(
                 Aircraft::getPosTime,
-                withFixedLag(TimeUnit.MINUTES.toMillis(15)),
+                limitingLagAndDelay(TimeUnit.MINUTES.toMillis(15), 10_000),
                 emitByFrame(wDefTrend),
                 60000L
         ));
@@ -121,54 +119,54 @@ public class Demo {
                 (TimestampedEntry<Long, List<Object>> entry) -> {
                     List<Object> results = entry.getValue();
                     List<Aircraft> aircraftList = (List<Aircraft>) results.get(0);
-                    assert aircraftList.size() == 1 : "more than 1 aircraft with same id";
                     Aircraft aircraft = aircraftList.get(0);
                     double coefficient = (double) results.get(1);
                     String phase = getPhase(coefficient);
                     if (phase == null) {
                         return null;
                     }
+
                     return tuple2(aircraft, phase);
                 }
         ));
 //
-//        Vertex enrichWithNoiseInfo = dag.newVertex("enrich with noise info", mapP(
-//                (Tuple2<Aircraft, String> tuple2) -> {
-//                    Aircraft aircraft = tuple2.f0();
-//                    String phase = tuple2.f1();
-//                    Long altitude = aircraft.getAlt();
-//                    Integer currentDb = getPhaseNoiseLookupTable(phase, aircraft.getWtc()).tailMap(altitude.intValue()).values().iterator().next();
-//                    return Tuple3.tuple3(aircraft, phase, currentDb);
-//
-//                })
-//        );
-//
-//        Vertex averageNoise = dag.newVertex("average noise", aggregateToSlidingWindowP(
-//                (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f0().getCity() + "_AVG_NOISE",
-//                (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f0().getPosTime(),
-//                TimestampKind.EVENT,
-//                wDefTrend,
-//                averagingLong((Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f2())
-//        ));
-//
-//        Vertex enrichWithC02Emission = dag.newVertex("enrich with C02 emission info", mapP(
-//                (Tuple2<Aircraft, String> tuple2) -> {
-//                    Aircraft aircraft = tuple2.f0();
-//                    String phase = tuple2.f1();
-//                    Double ltoC02EmissionInKg = Constants.typeToLTOCycyleC02Emission.getOrDefault(aircraft.getType(), 0d);
-//                    return Tuple3.tuple3(aircraft, phase, ltoC02EmissionInKg);
-//                }
-//        ));
-//
-//        Vertex averagePollution = dag.newVertex("pollution", aggregateToSlidingWindowP(
-//                (Tuple3<Aircraft, String, Double> tuple3) -> tuple3.f0().getCity() + "_C02_EMISSION",
-//                (Tuple3<Aircraft, String, Double> tuple3) -> tuple3.f0().getPosTime(),
-//                TimestampKind.EVENT,
-//                wDefTrend,
-//                summingDouble(
-//                        (DistributedToDoubleFunction<Tuple3<Aircraft, String, Double>>) Tuple3::f2
-//                )
-//        ));
+        Vertex enrichWithNoiseInfo = dag.newVertex("enrich with noise info", mapP(
+                (Tuple2<Aircraft, String> tuple2) -> {
+                    Aircraft aircraft = tuple2.f0();
+                    String phase = tuple2.f1();
+                    Long altitude = aircraft.getAlt();
+                    Integer currentDb = getPhaseNoiseLookupTable(phase, aircraft.getWtc()).tailMap(altitude.intValue()).values().iterator().next();
+                    return Tuple3.tuple3(aircraft, phase, currentDb);
+
+                })
+        );
+
+        Vertex averageNoise = dag.newVertex("average noise", aggregateToSlidingWindowP(
+                (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f0().getCity() + "_AVG_NOISE",
+                (Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f0().getPosTime(),
+                TimestampKind.EVENT,
+                wDefTrend,
+                AggregateOperations.averagingLong((Tuple3<Aircraft, String, Integer> tuple3) -> tuple3.f2())
+        ));
+
+        Vertex enrichWithC02Emission = dag.newVertex("enrich with C02 emission info", mapP(
+                (Tuple2<Aircraft, String> tuple2) -> {
+                    Aircraft aircraft = tuple2.f0();
+                    String phase = tuple2.f1();
+                    Double ltoC02EmissionInKg = Constants.typeToLTOCycyleC02Emission.getOrDefault(aircraft.getType(), 0d);
+                    return Tuple3.tuple3(aircraft, phase, ltoC02EmissionInKg);
+                }
+        ));
+
+        Vertex averagePollution = dag.newVertex("pollution", peekInputP(aggregateToSlidingWindowP(
+                (Tuple3<Aircraft, String, Double> tuple3) -> tuple3.f0().getCity() + "_C02_EMISSION",
+                (Tuple3<Aircraft, String, Double> tuple3) -> tuple3.f0().getPosTime(),
+                TimestampKind.EVENT,
+                wDefTrend,
+                summingDouble(
+                        (DistributedToDoubleFunction<Tuple3<Aircraft, String, Double>>) Tuple3::f2
+                )
+        )));
 
         Vertex filterHelpSignal = dag.newVertex("filterHelpSignal", filterP(Aircraft::isHelp))
                                      .localParallelism(1);
@@ -203,11 +201,11 @@ public class Demo {
                 )
         );
 //
-//        Vertex graphiteSink = dag.newVertex("graphite sink",
-//                ProcessorSupplier.of(
-//                        () -> new GraphiteSink("127.0.0.1", 2004)
-//                )
-//        );
+        Vertex graphiteSink = dag.newVertex("graphite sink",
+                ProcessorSupplier.of(
+                        () -> new GraphiteSink("127.0.0.1", 2004)
+                )
+        );
 
         Vertex loggerSink = dag.newVertex("logger", DiagnosticProcessors.writeLoggerP());
 
@@ -223,25 +221,26 @@ public class Demo {
                 .edge(between(insertWm, aggregateTrend).distributed().partitioned(Aircraft::getId))
                 .edge(between(aggregateTrend, tagWithPhase));
 
-        // average noise path
-//        dag
-//                .edge(from(tagWithPhase, 0).to(enrichWithNoiseInfo).distributed().broadcast())
-//                .edge(between(enrichWithNoiseInfo, averageNoise).allToOne())
-//                .edge(between(averageNoise, loggerSink));
+//         average noise path
+        dag
+                .edge(from(tagWithPhase, 0).to(enrichWithNoiseInfo))
+                .edge(between(enrichWithNoiseInfo, averageNoise).distributed().allToOne())
+                .edge(between(averageNoise, graphiteSink));
 
 
         // C02 emission calculation path
-//        dag
-//                .edge(from(tagWithPhase, 1).to(enrichWithC02Emission).distributed().broadcast())
-//                .edge(between(enrichWithC02Emission, averagePollution).allToOne())
-//                .edge(from(averagePollution).to(loggerSink, 1));
+        dag
+                .edge(from(tagWithPhase, 1).to(enrichWithC02Emission))
+                .edge(between(enrichWithC02Emission, averagePollution).distributed().allToOne())
+                .edge(from(averagePollution).to(graphiteSink, 1));
 
         // taking off planes to IMap
-        dag.edge(from(tagWithPhase, 0).to(takeOffMapSink));
+        dag.edge(from(tagWithPhase, 2).to(takeOffMapSink));
 
         // landing planes to IMap
-        dag.edge(from(tagWithPhase, 1).to(landingMapSink));
+        dag.edge(from(tagWithPhase, 3).to(landingMapSink));
 
+        dag.edge(from(tagWithPhase, 4).to(graphiteSink,2));
 
         dag.edge(from(filterAboveGround, 1).to(filterHelpSignal))
            .edge(between(filterHelpSignal, emergencyMapSink));
@@ -253,7 +252,11 @@ public class Demo {
 
     private static Aircraft assignCity(Aircraft ac) {
         if (ac.getAlt() > 0 && !ac.isGnd()) {
-            ac.setCity(getCity(ac.lon, ac.lat));
+            String city = getCity(ac.lon, ac.lat);
+            if (city == null) {
+                return null;
+            }
+            ac.setCity(city);
         }
         return ac;
     }

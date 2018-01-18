@@ -24,7 +24,6 @@ public class Util {
     public static float ATL_LAT = 33.640411f;
     public static float ATL_LON = -84.419853f;
 
-
     public static float PAR_LAT = 49.0096906f;
     public static float PAR_LON = 2.54792450f;
 

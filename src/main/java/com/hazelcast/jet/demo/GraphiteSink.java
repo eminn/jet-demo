@@ -2,6 +2,7 @@ package com.hazelcast.jet.demo;
 
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.datamodel.TimestampedEntry;
+import com.hazelcast.jet.datamodel.Tuple2;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -38,16 +39,28 @@ public class GraphiteSink extends AbstractProcessor {
 
     @Override
     protected boolean tryProcess(int ordinal, Object item) throws Exception {
-        TimestampedEntry<String, Double> timestampedEntry = (TimestampedEntry) item;
         PyList list = new PyList();
-        PyString metricName = new PyString(timestampedEntry.getKey());
-        PyInteger timestamp = new PyInteger((int)Instant.ofEpochMilli(timestampedEntry.getTimestamp()).getEpochSecond());
-        PyFloat metricValue = new PyFloat(timestampedEntry.getValue());
+        PyString metricName;
+        PyInteger timestamp;
+        PyFloat metricValue;
+        if (item instanceof TimestampedEntry) {
+            TimestampedEntry<String, Double> timestampedEntry = (TimestampedEntry) item;
+            metricName = new PyString(timestampedEntry.getKey());
+            timestamp = new PyInteger((int) Instant.ofEpochMilli(timestampedEntry.getTimestamp()).getEpochSecond());
+            metricValue = new PyFloat(timestampedEntry.getValue());
+        } else if (item instanceof Tuple2) {
+            Tuple2<Aircraft, String> aircraftWithPhase = (Tuple2<Aircraft, String>) item;
+            metricName = new PyString(aircraftWithPhase.f0().getCity() + "." + aircraftWithPhase.f1());
+            timestamp = new PyInteger((int) Instant.ofEpochMilli(aircraftWithPhase.f0().getPosTime()).getEpochSecond());
+            metricValue = new PyFloat(1);
+        } else {
+            return true;
+        }
         PyTuple metric = new PyTuple(metricName, new PyTuple(timestamp, metricValue));
         list.add(metric);
         System.out.println("added metric = " + metric);
 
-        PyString payload = cPickle.dumps(list,2);
+        PyString payload = cPickle.dumps(list, 2);
         byte[] header = ByteBuffer.allocate(4).putInt(payload.__len__()).array();
 
         outputStream.write(header);
