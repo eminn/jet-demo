@@ -2,11 +2,11 @@ package com.hazelcast.jet.demo;
 
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.datamodel.TimestampedEntry;
-import com.hazelcast.jet.datamodel.Tuple2;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.time.Instant;
+import java.util.Map.Entry;
 import org.python.core.PyFloat;
 import org.python.core.PyInteger;
 import org.python.core.PyList;
@@ -44,14 +44,19 @@ public class GraphiteSink extends AbstractProcessor {
         PyInteger timestamp;
         PyFloat metricValue;
         if (item instanceof TimestampedEntry) {
-            TimestampedEntry<String, Double> timestampedEntry = (TimestampedEntry) item;
-            metricName = new PyString(timestampedEntry.getKey());
+            TimestampedEntry<String, Object> timestampedEntry = (TimestampedEntry) item;
+            metricName = new PyString(timestampedEntry.getKey().replace(" ", "_"));
             timestamp = new PyInteger((int) Instant.ofEpochMilli(timestampedEntry.getTimestamp()).getEpochSecond());
-            metricValue = new PyFloat(timestampedEntry.getValue());
-        } else if (item instanceof Tuple2) {
-            Tuple2<Aircraft, String> aircraftWithPhase = (Tuple2<Aircraft, String>) item;
-            metricName = new PyString(aircraftWithPhase.f0().getCity() + "." + aircraftWithPhase.f1());
-            timestamp = new PyInteger((int) Instant.ofEpochMilli(aircraftWithPhase.f0().getPosTime()).getEpochSecond());
+            Object value = timestampedEntry.getValue();
+            if (value instanceof Double) {
+                metricValue = new PyFloat((Double) value);
+            } else {
+                metricValue = new PyFloat(((Entry<Aircraft, Integer>) value).getValue());
+            }
+        } else if (item instanceof Entry) {
+            Entry<Long, Aircraft> aircraftEntry = (Entry<Long, Aircraft>) item;
+            metricName = new PyString(aircraftEntry.getValue().getAirport().replace(" ", "_") + "." + aircraftEntry.getValue().verticalDirection.toString());
+            timestamp = new PyInteger((int) Instant.ofEpochMilli(aircraftEntry.getValue().getPosTime()).getEpochSecond());
             metricValue = new PyFloat(1);
         } else {
             return true;

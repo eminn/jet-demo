@@ -27,6 +27,15 @@ import static com.hazelcast.jet.demo.util.Util.asStringArray;
 
 public class Aircraft implements JsonSerializable, Serializable {
 
+
+    enum VerticalDirection {
+        UNKNOWN,
+        CRUISE,
+        ASCENDING,
+        DESCENDING
+    }
+
+
     /**
      * The unique identifier of the aircraft.
      */
@@ -92,7 +101,8 @@ public class Aircraft implements JsonSerializable, Serializable {
     boolean resetTrail;
     boolean hasSig;
     long sig;
-    String city;
+    String airport;
+    VerticalDirection verticalDirection = VerticalDirection.UNKNOWN;
 
 
     public long getId() {
@@ -331,12 +341,20 @@ public class Aircraft implements JsonSerializable, Serializable {
         return sig;
     }
 
-    public String getCity() {
-        return city;
+    public String getAirport() {
+        return airport;
     }
 
-    public void setCity(String city) {
-        this.city = city;
+    public void setAirport(String airport) {
+        this.airport = airport;
+    }
+
+    public VerticalDirection getVerticalDirection() {
+        return verticalDirection;
+    }
+
+    public void setVerticalDirection(VerticalDirection verticalDirection) {
+        this.verticalDirection = verticalDirection;
     }
 
     @Override
@@ -414,7 +432,7 @@ public class Aircraft implements JsonSerializable, Serializable {
                 ", alt=" + alt +
                 ", coord=" + String.format("%.2f,%.2f", lat, lon) +
                 ", mdl='" + mdl + '\'' +
-                ", city='" + city + '\'' +
+                ", city='" + airport + '\'' +
                 ", posTime=" + Util.toLocalDateTime(posTime).toLocalTime() +
                 '}';
     }
@@ -436,7 +454,7 @@ public class Aircraft implements JsonSerializable, Serializable {
                 ", callSus=" + callSus +
                 ", lat=" + lat +
                 ", lon=" + lon +
-                ", city=" + city +
+                ", city=" + airport +
                 ", posTime=" + Util.toLocalDateTime(posTime) +
                 ", posTimeTs=" + posTime +
                 ", mLat=" + mLat +

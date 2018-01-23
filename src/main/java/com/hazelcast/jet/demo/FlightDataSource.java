@@ -5,6 +5,7 @@ import com.hazelcast.com.eclipsesource.json.Json;
 import com.hazelcast.com.eclipsesource.json.JsonArray;
 import com.hazelcast.com.eclipsesource.json.JsonObject;
 import com.hazelcast.com.eclipsesource.json.JsonValue;
+import com.hazelcast.jet.Source;
 import com.hazelcast.jet.Traverser;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
@@ -14,13 +15,16 @@ import java.io.InputStreamReader;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import javax.net.ssl.HttpsURLConnection;
 
+import static com.hazelcast.jet.Sources.fromProcessor;
 import static com.hazelcast.jet.Traversers.traverseIterable;
 import static com.hazelcast.jet.core.ProcessorMetaSupplier.dontParallelize;
 import static com.hazelcast.jet.impl.util.Util.uncheckCall;
 import static com.hazelcast.util.StringUtil.isNullOrEmpty;
+import static java.util.stream.Collectors.toList;
 
 public class FlightDataSource extends AbstractProcessor {
 
@@ -80,24 +84,27 @@ public class FlightDataSource extends AbstractProcessor {
         JsonValue value = Json.parse(response.toString());
         JsonObject object = value.asObject();
         JsonArray acList = object.get("acList").asArray();
-        getLogger().info("Polled " + acList.size() + " aircraft.");
-        return traverseIterable(acList.values())
-                .map(this::parseAc)
-                .filter(a -> !isNullOrEmpty(a.reg)) // there should be a reg number
-                .filter(a -> a.posTime > 0) // there should be a timestamp
-                .filter(a -> {
-                    // only emit updated aircraft
-                    Long newTs = a.posTime;
-                    if (newTs <= 0) {
-                        return false;
-                    }
-                    Long oldTs = idToTimestamp.get(a.id);
-                    if (oldTs != null && newTs <= oldTs) {
-                        return false;
-                    }
-                    idToTimestamp.put(a.id, newTs);
-                    return true;
-                });
+
+        List<Aircraft> newEvents =
+                acList.values().stream()
+                      .map(this::parseAc)
+                      .filter(a -> !isNullOrEmpty(a.reg)) // there should be a reg number
+                      .filter(a -> a.posTime > 0) // there should be a timestamp
+                      .filter(a -> {
+                          // only emit updated newEvents
+                          Long newTs = a.posTime;
+                          if (newTs <= 0) {
+                              return false;
+                          }
+                          Long oldTs = idToTimestamp.get(a.id);
+                          if (oldTs != null && newTs <= oldTs) {
+                              return false;
+                          }
+                          idToTimestamp.put(a.id, newTs);
+                          return true;
+                      }).collect(toList());
+        getLogger().info("Polled " + acList.size() + " aircraft, " + newEvents.size() + " new locations.");
+        return traverseIterable(newEvents);
     }
 
     private Aircraft parseAc(JsonValue ac) {
@@ -106,8 +113,12 @@ public class FlightDataSource extends AbstractProcessor {
         return aircraft;
     }
 
-    public static ProcessorMetaSupplier supplier(String url, long intevalMillis) {
-        return dontParallelize(() -> new FlightDataSource(url, intevalMillis));
+    public static ProcessorMetaSupplier streamAircraftP(String url, long intervalMillis) {
+        return dontParallelize(() -> new FlightDataSource(url, intervalMillis));
+    }
+
+    public static Source<Aircraft> streamAircraft(String url, long intervalMillis) {
+        return fromProcessor("streamAircraft", streamAircraftP(url, intervalMillis));
     }
 
 }

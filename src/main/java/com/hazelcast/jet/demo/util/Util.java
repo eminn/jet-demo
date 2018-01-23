@@ -27,6 +27,12 @@ public class Util {
     public static float PAR_LAT = 49.0096906f;
     public static float PAR_LON = 2.54792450f;
 
+    public static float TOK_LAT = 35.765786f;
+    public static float TOK_LON = 140.386347f;
+
+    public static float JFK_LAT = 40.6441666667f;
+    public static float JFK_LON = -73.7822222222f;
+
 
     public static boolean inIstanbul(float lon, float lat) {
         return inBoundariesOf(lon, lat, boundingBox(IST_LON, IST_LAT, 80f));
@@ -46,6 +52,14 @@ public class Util {
 
     public static boolean inParis(float lon, float lat) {
         return inBoundariesOf(lon, lat, boundingBox(PAR_LON, PAR_LAT, 80f));
+    }
+
+    public static boolean inTokyo(float lon, float lat) {
+        return inBoundariesOf(lon, lat, boundingBox(TOK_LON, TOK_LAT, 80f));
+    }
+
+    public static boolean inNYC(float lon, float lat) {
+        return inBoundariesOf(lon, lat, boundingBox(JFK_LON, JFK_LAT, 80f));
     }
 
     public static double[] boundingBox(float lon, float lat, float radius) {

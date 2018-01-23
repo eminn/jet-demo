@@ -27,6 +27,15 @@ class Constants {
         put(3000, 72);
     }};
 
+    static final SortedMap<Integer, Integer> mediumWTCClimbingAltitudeToNoiseDb = new TreeMap<Integer, Integer>() {{
+        put(500, 83);
+        put(1000, 81);
+        put(1500, 74);
+        put(2000, 68);
+        put(3000, 61);
+    }};
+
+
     static final Map<String, Double> typeToLTOCycyleC02Emission = new HashMap<String, Double>() {{
         put("B738", 2625d);
         put("A320", 2750.7d);
@@ -62,11 +71,4 @@ class Constants {
         put("DC10", 7460d);
     }};
 
-    static final SortedMap<Integer, Integer> mediumWTCClimbingAltitudeToNoiseDb = new TreeMap<Integer, Integer>() {{
-        put(500, 83);
-        put(1000, 81);
-        put(1500, 74);
-        put(2000, 68);
-        put(3000, 61);
-    }};
 }
