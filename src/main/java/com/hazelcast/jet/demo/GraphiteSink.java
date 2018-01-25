@@ -15,8 +15,8 @@ import org.python.core.PyTuple;
 import org.python.modules.cPickle;
 
 /**
- * date: 1/16/18
- * author: emindemirci
+ * Sink implementation which forwards the items it receives to the Graphite.
+ * Graphite's Pickle Protocol is used for communication between Jet and Graphite.
  */
 public class GraphiteSink extends AbstractProcessor {
 
@@ -27,14 +27,12 @@ public class GraphiteSink extends AbstractProcessor {
     public GraphiteSink(String host, int port) {
         this.host = host;
         this.port = port;
-
     }
 
     @Override
     protected void init(Context context) throws Exception {
         Socket socket = new Socket(host, port);
         outputStream = socket.getOutputStream();
-
     }
 
     @Override
@@ -63,7 +61,6 @@ public class GraphiteSink extends AbstractProcessor {
         }
         PyTuple metric = new PyTuple(metricName, new PyTuple(timestamp, metricValue));
         list.add(metric);
-        System.out.println("added metric = " + metric);
 
         PyString payload = cPickle.dumps(list, 2);
         byte[] header = ByteBuffer.allocate(4).putInt(payload.__len__()).array();

@@ -5,7 +5,6 @@ import com.hazelcast.jet.JetInstance;
 import com.hazelcast.jet.Job;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.Processor;
-import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.TimestampKind;
 import com.hazelcast.jet.core.Vertex;
 import com.hazelcast.jet.core.Watermark;
@@ -33,6 +32,7 @@ import static com.hazelcast.jet.aggregate.AggregateOperations.summingDouble;
 import static com.hazelcast.jet.aggregate.AggregateOperations.toList;
 import static com.hazelcast.jet.core.Edge.between;
 import static com.hazelcast.jet.core.Edge.from;
+import static com.hazelcast.jet.core.ProcessorSupplier.of;
 import static com.hazelcast.jet.core.WatermarkEmissionPolicy.emitByFrame;
 import static com.hazelcast.jet.core.WatermarkGenerationParams.wmGenParams;
 import static com.hazelcast.jet.core.WatermarkPolicies.limitingLagAndDelay;
@@ -42,6 +42,7 @@ import static com.hazelcast.jet.core.processor.Processors.aggregateToSlidingWind
 import static com.hazelcast.jet.core.processor.Processors.filterP;
 import static com.hazelcast.jet.core.processor.Processors.insertWatermarksP;
 import static com.hazelcast.jet.core.processor.Processors.mapP;
+import static com.hazelcast.jet.core.processor.SinkProcessors.updateMapP;
 import static com.hazelcast.jet.core.processor.SinkProcessors.writeMapP;
 import static com.hazelcast.jet.demo.Aircraft.VerticalDirection.ASCENDING;
 import static com.hazelcast.jet.demo.Aircraft.VerticalDirection.CRUISE;
@@ -83,6 +84,7 @@ public class Demo {
     private static DAG buildDAG() {
         DAG dag = new DAG();
 
+        // initialize the source vertex which polls the API for every 10s
         Vertex source = dag.newVertex("flightDataSource", FlightDataSource.streamAircraftP(SOURCE_URL, 10000));
 
         // we are interested only in planes above the ground and altitude less than 3000
@@ -126,7 +128,7 @@ public class Demo {
                     Aircraft aircraft = entry.getValue();
                     Long altitude = aircraft.getAlt();
                     SortedMap<Integer, Integer> lookupTable = getPhaseNoiseLookupTable(aircraft);
-                    if (lookupTable.isEmpty()){
+                    if (lookupTable.isEmpty()) {
                         return null;
                     }
                     Integer currentDb = lookupTable.tailMap(altitude.intValue()).values().iterator().next();
@@ -165,9 +167,7 @@ public class Demo {
         Vertex landingMapSink = dag.newVertex("landingMapSink", writeMapP(LANDING_MAP));
 
         Vertex graphiteSink = dag.newVertex("graphite sink",
-                ProcessorSupplier.of(
-                        () -> new GraphiteSink("127.0.0.1", 2004)
-                )
+                of(() -> new GraphiteSink("127.0.0.1", 2004))
         );
 
         dag.edge(between(source, filterLowAltitude));
@@ -178,7 +178,9 @@ public class Demo {
         // identify flight phase (LANDING/TAKE-OFF)
         dag
                 .edge(between(assignAirport, insertWm))
-                .edge(between(insertWm, aggregateTrend).distributed().partitioned(Aircraft::getId))
+                .edge(between(insertWm, aggregateTrend)
+                        .distributed()
+                        .partitioned(Aircraft::getId))
                 .edge(between(aggregateTrend, addVerticalDirection));
 
         // max noise path
@@ -193,7 +195,9 @@ public class Demo {
         // C02 emission calculation path
         dag
                 .edge(from(addVerticalDirection, 1).to(enrichWithC02Emission))
-                .edge(between(enrichWithC02Emission, averagePollution).distributed().allToOne())
+                .edge(between(enrichWithC02Emission, averagePollution)
+                        .distributed()
+                        .allToOne())
                 .edge(from(averagePollution).to(graphiteSink, 1));
 
         // taking off planes to IMap
@@ -220,6 +224,13 @@ public class Demo {
         return ac;
     }
 
+    /**
+     * Returns if the aircraft is in 80 mile radius area of the airport.
+     *
+     * @param lon longitude of the aircraft
+     * @param lat latitude of the aircraft
+     * @return name of the airport
+     */
     private static String getAirport(float lon, float lat) {
         if (inLondon(lon, lat)) {
             return "London";
@@ -240,6 +251,12 @@ public class Demo {
         return null;
     }
 
+    /**
+     * Returns altitude to noise level lookup table for the aircraft based on its weight category
+     *
+     * @param aircraft
+     * @return SortedMap contains altitude to noise level mappings.
+     */
     private static SortedMap<Integer, Integer> getPhaseNoiseLookupTable(Aircraft aircraft) {
         VerticalDirection verticalDirection = aircraft.getVerticalDirection();
         WakeTurbulanceCategory wtc = aircraft.getWtc();
@@ -259,17 +276,28 @@ public class Demo {
         return Collections.emptySortedMap();
     }
 
-    private static Entry<Long, Aircraft> assignDirection(TimestampedEntry<Long, List<Object>> e) {
+    /**
+     * Assigns the vertical direction based on the linear trend coefficient of the altitude of the aircraft.
+     *
+     * @param entry contains the altitude and results from the linear trend calculation.
+     * @return an entry whose key is the altitude and value is the aircraft object which contains the vertical direction.
+     */
+    private static Entry<Long, Aircraft> assignDirection(TimestampedEntry<Long, List<Object>> entry) {
         // unpack the results
-        List<Object> results = e.getValue();
+        List<Object> results = entry.getValue();
         List<Aircraft> aircraftList = (List<Aircraft>) results.get(0);
         Aircraft aircraft = aircraftList.get(0);
         double coefficient = (double) results.get(1);
         aircraft.setVerticalDirection(getVerticalDirection(coefficient));
-        return entry(e.getKey(), aircraft);
+        return entry(entry.getKey(), aircraft);
     }
 
-
+    /**
+     * Returns the vertical direction based on the linear trend coefficient of the altitude
+     *
+     * @param coefficient
+     * @return VerticalDirection enum value
+     */
     private static VerticalDirection getVerticalDirection(double coefficient) {
         if (coefficient == Double.NaN) {
             return UNKNOWN;

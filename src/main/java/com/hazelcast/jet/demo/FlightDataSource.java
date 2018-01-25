@@ -26,6 +26,14 @@ import static com.hazelcast.jet.impl.util.Util.uncheckCall;
 import static com.hazelcast.util.StringUtil.isNullOrEmpty;
 import static java.util.stream.Collectors.toList;
 
+/**
+ * Polls the <a href="https://www.adsbexchange.com">ADS-B Exchange</a> HTTP API
+ * for flight data. The API will be polled every {@code pollIntervalMillis} milliseconds.
+ *
+ * After a successful poll, this source filters out aircrafts which are missing registration number
+ * and position timestamp. It will also records the latest position timestamp of the aircrafts so if
+ * there are no update for an aircraft it will not be emitted from this source.
+ */
 public class FlightDataSource extends AbstractProcessor {
 
     private final URL url;
@@ -42,7 +50,7 @@ public class FlightDataSource extends AbstractProcessor {
             throw ExceptionUtil.rethrow(e);
         }
         this.intervalMillis = pollIntervalMillis;
-    }
+    }              
 
     @Override
     public boolean complete() {
